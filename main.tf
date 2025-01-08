@@ -1,80 +1,99 @@
-# Declare the variable for API Key
+provider "aws" {
+  region = var.aws_region
+}
+
+# Declare the variable for the API Key
 variable "nba_api_key" {
   description = "The API key for the NBA data"
   type        = string
-  sensitive   = true  # Mark it as sensitive to prevent it from being exposed in logs
+  sensitive   = true
 }
 
-provider "aws" {
-  region = "us-west-1" # Change to your preferred region
+variable "email_address" {
+  description = "The email address for SNS subscription"
+  type        = string
 }
 
-resource "aws_s3_bucket" "lambda_bucket" {
-  bucket = "nba-game-updates-bucket"
-  acl    = "private"
+variable "phone_number" {
+  description = "The phone number for SNS subscription"
+  type        = string
 }
 
-resource "aws_s3_object" "lambda_code" {
-  bucket = aws_s3_bucket.lambda_bucket.id
-  key    = "nba_game_updates.zip"
-  source = "nba_game_updates.zip"
+resource "aws_sns_topic" "gd_topic" {
+  name = "gd_topic"
 }
 
 resource "aws_iam_role" "lambda_role" {
-  name = "nba_lambda_role"
+  name = "lambda_role"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "lambda.amazonaws.com" }
-    }]
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = { Service = "lambda.amazonaws.com" },
+        Action    = "sts:AssumeRole"
+      }
+    ]
   })
+
+  inline_policy {
+    name   = "sns_publish_policy"
+    policy = jsonencode({
+      Version = "2012-10-17",
+      Statement = [
+        {
+          Effect   = "Allow",
+          Action   = "sns:Publish",
+          Resource = aws_sns_topic.gd_topic.arn
+        }
+      ]
+    })
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_policy" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_sns_topic" "nba_updates_topic" {
-  name = "nba-game-updates-topic"
-}
-
-resource "aws_lambda_function" "nba_game_updates" {
-  function_name = "NBA_Game_Updates"
+resource "aws_lambda_function" "gd_notifications" {
+  function_name = "gd_notifications"
   role          = aws_iam_role.lambda_role.arn
-  handler       = "lambda_function.lambda_handler"
-  runtime       = "python3.9" # Update based on your Python version
-  timeout       = 30
-
-  s3_bucket        = aws_s3_bucket.lambda_bucket.id
-  s3_key           = aws_s3_object.lambda_code.key
+  runtime       = "python3.8"
+  handler       = "gd_notifications.lambda_handler"
+  filename      = "path/to/your/lambda/code.zip"
 
   environment {
     variables = {
-      NBA_API_KEY   = var.nba_api_key  # Passing the API key as an environment variable
-      SNS_TOPIC_ARN = aws_sns_topic.nba_updates_topic.arn
+      NBA_API_KEY   = var.nba_api_key
+      SNS_TOPIC_ARN = aws_sns_topic.gd_topic.arn
     }
   }
 }
 
-resource "aws_cloudwatch_event_rule" "schedule_rule" {
-  name                = "NBA_Game_Updates_Schedule"
-  schedule_expression = "rate(1 day)"
+resource "aws_cloudwatch_event_rule" "gd_notifications_schedule" {
+  name                = "gd_notifications_schedule"
+  schedule_expression = "cron(0 9 * * ? *)" # Every day at 9:00 AM UTC
 }
 
-resource "aws_cloudwatch_event_target" "lambda_target" {
-  rule      = aws_cloudwatch_event_rule.schedule_rule.name
-  target_id = "NBA_Game_Updates"
-  arn       = aws_lambda_function.nba_game_updates.arn
+resource "aws_cloudwatch_event_target" "gd_notifications_target" {
+  rule      = aws_cloudwatch_event_rule.gd_notifications_schedule.name
+  target_id = "gd_notifications_target"
+  arn       = aws_lambda_function.gd_notifications.arn
 }
 
-resource "aws_lambda_permission" "allow_cloudwatch" {
-  statement_id  = "AllowExecutionFromCloudWatch"
+resource "aws_lambda_permission" "allow_eventbridge_invocation" {
+  statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.nba_game_updates.function_name
+  function_name = aws_lambda_function.gd_notifications.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.schedule_rule.arn
+  source_arn    = aws_cloudwatch_event_rule.gd_notifications_schedule.arn
+}
+
+resource "aws_sns_topic_subscription" "email_subscription" {
+  protocol = "email"
+  endpoint = var.email_address
+  topic_arn = aws_sns_topic.gd_topic.arn
+}
+
+resource "aws_sns_topic_subscription" "sms_subscription" {
+  protocol = "sms"
+  endpoint = var.phone_number
+  topic_arn = aws_sns_topic.gd_topic.arn
 }

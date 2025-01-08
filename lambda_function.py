@@ -4,7 +4,7 @@ import urllib.request
 import boto3
 from datetime import datetime, timedelta, timezone
 
-def format_game_data(game):
+def format_game_data(game, playbyplay_data=None):
     status = game.get("Status", "Unknown")
     away_team = game.get("AwayTeam", "Unknown")
     home_team = game.get("HomeTeam", "Unknown")
@@ -16,6 +16,12 @@ def format_game_data(game):
     quarters = game.get("Quarters", [])
     quarter_scores = ', '.join([f"Q{q['Number']}: {q.get('AwayScore', 'N/A')}-{q.get('HomeScore', 'N/A')}" for q in quarters])
     
+    # Play-by-play data (if available)
+    play_by_play_info = ""
+    if playbyplay_data:
+        last_play = playbyplay_data.get("LastPlay", "N/A")
+        play_by_play_info = f"\nLast Play: {last_play}"
+
     if status == "Final":
         return (
             f"Game Status: {status}\n"
@@ -24,6 +30,7 @@ def format_game_data(game):
             f"Start Time: {start_time}\n"
             f"Channel: {channel}\n"
             f"Quarter Scores: {quarter_scores}\n"
+            f"{play_by_play_info}"
         )
     elif status == "InProgress":
         last_play = game.get("LastPlay", "N/A")
@@ -33,6 +40,7 @@ def format_game_data(game):
             f"Current Score: {final_score}\n"
             f"Last Play: {last_play}\n"
             f"Channel: {channel}\n"
+            f"{play_by_play_info}"
         )
     elif status == "Scheduled":
         return (
@@ -61,20 +69,35 @@ def lambda_handler(event, context):
     
     print(f"Fetching games for date: {today_date}")
     
-    # Fetch data from the API
+    # Fetch game data from the NBA API
     api_url = f"https://api.sportsdata.io/v3/nba/scores/json/GamesByDate/{today_date}?key={api_key}"
-    print(today_date)
-     
+    
     try:
         with urllib.request.urlopen(api_url) as response:
             data = json.loads(response.read().decode())
             print(json.dumps(data, indent=4))  # Debugging: log the raw data
     except Exception as e:
-        print(f"Error fetching data from API: {e}")
-        return {"statusCode": 500, "body": "Error fetching data"}
+        print(f"Error fetching game data from API: {e}")
+        return {"statusCode": 500, "body": "Error fetching game data"}
     
-    # Include all games (final, in-progress, and scheduled)
-    messages = [format_game_data(game) for game in data]
+    # Loop through each game to fetch additional play-by-play data
+    messages = []
+    for game in data:
+        game_id = game.get("GameID", None)
+        if game_id:
+            # Fetch play-by-play data
+            playbyplay_url = f"https://replay.sportsdata.io/api/v3/nba/pbp/json/playbyplay/{game_id}?key={api_key}"
+            try:
+                with urllib.request.urlopen(playbyplay_url) as response:
+                    playbyplay_data = json.loads(response.read().decode())
+            except Exception as e:
+                print(f"Error fetching play-by-play data for game {game_id}: {e}")
+                playbyplay_data = None
+
+            # Format the game data with play-by-play info
+            messages.append(format_game_data(game, playbyplay_data))
+
+    # Final message to be sent
     final_message = "\n---\n".join(messages) if messages else "No games available for today."
     
     # Publish to SNS
